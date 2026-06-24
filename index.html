@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Smart TD</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    
+    <div id="ui-layer">
+        <div class="top-bar">
+            <div class="stat">❤️ <span id="ui-lives">20</span></div>
+            <div class="stat">💰 <span id="ui-gold">150</span></div>
+            <div class="stat">🏆 <span id="ui-score">0</span></div>
+            <div class="stat">🌊 Волна: <span id="ui-wave">0</span></div>
+            <div class="stat" style="color: #f1c40f;">⏳ До волны: <span id="ui-timer">5</span>с</div>
+        </div>
+        
+        <div id="game-over-screen" class="hidden">
+            <h1>ИГРА ОКОНЧЕНА</h1>
+            <p>Итоговый счет: <span id="final-score">0</span></p>
+            <button onclick="location.reload()">Играть снова</button>
+        </div>
+    </div>
+
+    <script src="main.js"></script>
+</body>
+</html>
