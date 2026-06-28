@@ -1,349 +1,390 @@
 // ==========================================
-// 1. НАСТРОЙКИ СЕТКИ И ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
+// 1. ГЛОБАЛЬНЫЕ НАСТРОЙКИ И КЭШИРОВАНИЕ
 // ==========================================
 const canvas = document.getElementById('gameCanvas');
-const ctx = canvas.getContext('2d');
+const ctx = canvas.getContext('2d', { alpha: false });
 
-const COLS = 30;
-const ROWS = 30;
+const bgCanvas = document.createElement('canvas');
+const bgCtx = bgCanvas.getContext('2d', { alpha: false });
+
+const COLS = 40;
+const ROWS = 40;
 let tileSize = 0;
 let offsetX = 0;
 let offsetY = 0;
 
 const mouse = { x: -1, y: -1, col: -1, row: -1 };
 
-// Игровое состояние
+// ==========================================
+// 2. СОСТОЯНИЕ ИГРЫ И БАЛАНС
+// ==========================================
 const enemies = [];
 const towers = [];
-let gold = 150;
+let gold = 130; 
 let lives = 20;
 let score = 0;
 let isGameOver = false;
-const TOWER_COST = 30;
+let selectedTower = null; 
 
-// База данных врагов (добавлены Осадная башня и Землекоп)
+// Пассивный доход
+let goldPerSecond = 5; // Сколько золота капает в секунду
+let goldTimer = 0;
+
 const ENEMY_STATS = {
-    Knight: { hp: 15, speed: 0.5, reward: 10, color: '#bdc3c7', radius: 0.3, role: 'basic' },
-    Mage:   { hp: 10, speed: 1.0, reward: 20, color: '#9b59b6', radius: 0.25, role: 'basic' },
-    Siege:  { hp: 80, speed: 0.3, reward: 100, color: '#c0392b', radius: 0.45, role: 'siege', damage: 10, range: 4, cooldown: 2.0 },
-    Digger: { hp: 5,  speed: 0.8, reward: 50, color: '#f39c12', radius: 0.2, role: 'digger' } // Идет напролом
+    Knight: { hp: 120, speed: 2.0, reward: 10, color: '#bdc3c7', radius: 0.4, role: 'basic' },
+    Mage:   { hp: 70,  speed: 2.8, reward: 15, color: '#9b59b6', radius: 0.3, role: 'basic' },
+    Siege:  { hp: 800, speed: 1.0, reward: 80, color: '#c0392b', radius: 0.6, role: 'siege', damage: 30, rangeTiles: 5, cooldown: 1 },
+    Digger: { hp: 500, speed: 4.0, reward: 50, color: '#f39c12', radius: 0.35, role: 'digger' }, 
+    Titan:  { hp: 5000, speed: 0.8, reward: 500, color: '#f1c40f', radius: 0.8, role: 'basic' }    
+};
+
+const TOWER_STATS = {
+    Basic:  { cost: 50,  hp: 200, damage: 20,  rangeTiles: 5,   cooldown: 0.5, color: '#3498db', name: 'Базовая' },
+    Sniper: { cost: 120, hp: 150, damage: 120, rangeTiles: 12,  cooldown: 2.0, color: '#9b59b6', name: 'Снайпер' },
+    Rapid:  { cost: 80,  hp: 250, damage: 8,   rangeTiles: 3.5, cooldown: 0.1, color: '#f1c40f', name: 'Пулемет' }
+};
+
+let currentBuildType = 'Basic';
+
+window.selectTower = function(type) {
+    currentBuildType = type;
+    document.querySelectorAll('.build-option').forEach(el => el.classList.remove('active'));
+    const btn = document.getElementById('btn-' + type);
+    if (btn) btn.classList.add('active');
+    
+    selectedTower = null;
+    updateUpgradeUI();
 };
 
 function updateUI() {
     document.getElementById('ui-lives').innerText = lives;
-    document.getElementById('ui-gold').innerText = gold;
+    // Обновляем текст золота, добавляя красивую приписку инкома
+    document.getElementById('ui-gold').innerText = `${Math.floor(gold)} (+${goldPerSecond}/с)`;
     document.getElementById('ui-score').innerText = score;
+    updateUpgradeUI();
+}
+
+function updateUpgradeUI() {
+    const menu = document.getElementById('upgrade-menu');
+    if (!selectedTower) {
+        menu.classList.add('hidden');
+        return;
+    }
+    menu.classList.remove('hidden');
+    document.getElementById('upg-title').innerText = TOWER_STATS[selectedTower.type].name;
+    document.getElementById('upg-level').innerText = selectedTower.level;
+    document.getElementById('upg-damage').innerText = selectedTower.damage;
+    
+    const upgBtn = document.getElementById('btn-upgrade');
+    if (selectedTower.level >= 3) {
+        upgBtn.innerText = "Макс. Уровень";
+        upgBtn.disabled = true;
+    } else {
+        upgBtn.innerText = `Улучшить (${selectedTower.upgradeCost}g)`;
+        upgBtn.disabled = gold < selectedTower.upgradeCost;
+    }
+    document.getElementById('btn-sell').innerText = `Продать (+${Math.floor(selectedTower.totalSpent / 2)}g)`;
+}
+
+window.upgradeSelectedTower = function() {
+    if (selectedTower && selectedTower.level < 3 && gold >= selectedTower.upgradeCost) {
+        gold -= selectedTower.upgradeCost;
+        selectedTower.upgrade();
+        updateUI();
+    }
+};
+
+window.sellSelectedTower = function() {
+    if (selectedTower) {
+        gold += Math.floor(selectedTower.totalSpent / 2);
+        gameGrid.cells[selectedTower.col][selectedTower.row].hasTower = false;
+        
+        const idx = towers.indexOf(selectedTower);
+        if (idx > -1) towers.splice(idx, 1);
+        
+        selectedTower = null;
+        pathfinder.calculateFields(); 
+        updateUI();
+    }
+};
+
+// ==========================================
+// 3. МИНИ-КУЧА
+// ==========================================
+class MinHeap {
+    constructor() { this.heap = []; }
+    push(node) { this.heap.push(node); this.bubbleUp(this.heap.length - 1); }
+    pop() {
+        if (this.heap.length <= 1) return this.heap.pop();
+        const top = this.heap[0]; this.heap[0] = this.heap.pop(); this.sinkDown(0); return top;
+    }
+    bubbleUp(idx) {
+        const element = this.heap[idx];
+        while (idx > 0) {
+            let parentIdx = Math.floor((idx - 1) / 2), parent = this.heap[parentIdx];
+            if (element.dist >= parent.dist) break;
+            this.heap[parentIdx] = element; this.heap[idx] = parent; idx = parentIdx;
+        }
+    }
+    sinkDown(idx) {
+        const length = this.heap.length, element = this.heap[idx];
+        while (true) {
+            let leftIdx = 2 * idx + 1, rightIdx = 2 * idx + 2;
+            let left, right, swap = null;
+            if (leftIdx < length) { left = this.heap[leftIdx]; if (left.dist < element.dist) swap = leftIdx; }
+            if (rightIdx < length) { right = this.heap[rightIdx]; if ((swap === null && right.dist < element.dist) || (swap !== null && right.dist < left.dist)) swap = rightIdx; }
+            if (swap === null) break;
+            this.heap[idx] = this.heap[swap]; this.heap[swap] = element; idx = swap;
+        }
+    }
+    isEmpty() { return this.heap.length === 0; }
 }
 
 // ==========================================
-// 2. КЛАССЫ СУЩНОСТЕЙ
+// 4. СУЩНОСТИ
 // ==========================================
 class Enemy {
-    constructor(type) {
+    constructor(type, hpMultiplier = 1) {
         this.type = type;
         const stats = ENEMY_STATS[type];
         
-        this.maxHp = stats.hp;
+        this.maxHp = Math.floor(stats.hp * hpMultiplier);
         this.hp = this.maxHp;
         this.speed = stats.speed;
         this.reward = stats.reward;
         this.color = stats.color;
         this.radius = stats.radius;
         
-        // Специфичные статы для осадной башни
         this.role = stats.role;
         this.damage = stats.damage || 0;
-        this.range = (stats.range || 0) * tileSize;
+        this.rangeTiles = stats.rangeTiles || 0;
+        this.range = this.rangeTiles * tileSize; 
+        
         this.cooldown = stats.cooldown || 0;
         this.timeSinceAttack = 0;
         this.targetTower = null;
         this.isFiring = false;
-
+        this.isDigging = false;
         const spawnTile = pathfinder.spawnTile;
         this.col = spawnTile.col;
         this.row = spawnTile.row;
-
         this.x = offsetX + this.col * tileSize + tileSize / 2;
         this.y = offsetY + this.row * tileSize + tileSize / 2;
-        
         this.targetX = this.x;
         this.targetY = this.y;
-
         this.reachedBase = false;
     }
 
     update(dt) {
         this.isFiring = false;
 
-        // Логика Осадной Башни (Siege)
         if (this.role === 'siege') {
             this.timeSinceAttack += dt;
-            
-            // Ищем живую башню
             if (!this.targetTower || this.targetTower.hp <= 0) {
                 this.targetTower = null;
                 for (let t of towers) {
-                    const dx = this.x - t.x;
-                    const dy = this.y - t.y;
-                    if (Math.sqrt(dx*dx + dy*dy) <= this.range) {
-                        this.targetTower = t;
-                        break;
-                    }
+                    const dx = this.x - t.x, dy = this.y - t.y;
+                    if (Math.sqrt(dx*dx + dy*dy) <= this.range) { this.targetTower = t; break; }
                 }
             }
-
-            // Если нашли башню - стоим и стреляем
             if (this.targetTower) {
                 if (this.timeSinceAttack >= this.cooldown) {
                     this.targetTower.hp -= this.damage;
-                    this.timeSinceAttack = 0;
-                    this.isFiring = true;
+                    this.timeSinceAttack = 0; this.isFiring = true;
                 }
-                return; // Прерываем движение!
+                return; 
             }
         }
 
-        // Движение
         const speedPixels = this.speed * tileSize * dt;
-        const dx = this.targetX - this.x;
-        const dy = this.targetY - this.y;
+        const dx = this.targetX - this.x, dy = this.targetY - this.y;
         const distance = Math.sqrt(dx * dx + dy * dy);
 
         if (distance <= speedPixels) {
-            this.x = this.targetX;
-            this.y = this.targetY;
-
+            this.x = this.targetX; this.y = this.targetY;
             this.col = Math.floor((this.x - offsetX) / tileSize);
             this.row = Math.floor((this.y - offsetY) / tileSize);
 
             const currentTile = gameGrid.cells[this.col][this.row];
 
-            if (currentTile.type === 'base') {
-                this.hp = 0;
-                this.reachedBase = true;
-                return;
+            if (currentTile.type === 'base') { this.hp = 0; this.reachedBase = true; return; }
+
+            if (this.role === 'digger') {
+                this.isDigging = true;
+                for (let t of towers) {
+                    if (Math.abs(t.col - this.col) <= 1 && Math.abs(t.row - this.row) <= 1) {
+                        t.hp -= 9999; this.hp = 0; return;
+                    }
+                }
+                if (currentTile.type === 'grass') {
+                    currentTile.type = 'road'; currentTile.baseCost = 1.0; currentTile.currentCost = 1.0; currentTile.isBuildable = false;
+                    bgCtx.fillStyle = '#2d3436'; bgCtx.fillRect(offsetX + this.col * tileSize, offsetY + this.row * tileSize, tileSize, tileSize);
+                    pathfinder.calculateFields();
+                }
             }
 
-            // Логика Землекопа (Digger) - подрыв башни
-            if (this.role === 'digger' && currentTile.hasTower) {
-                let towerObj = towers.find(t => t.col === this.col && t.row === this.row);
-                if (towerObj) towerObj.hp -= 999; // Мгновенно ломает башню
-                this.hp = 0; // И умирает сам
-                return;
-            }
-
-            // Выбор вектора (Землекоп использует скрытое прямое поле)
             let vectorToUse = this.role === 'digger' ? currentTile.diggerVector : currentTile.vector;
-
             if (vectorToUse) {
                 this.targetX = offsetX + (this.col + vectorToUse.x) * tileSize + tileSize / 2;
                 this.targetY = offsetY + (this.row + vectorToUse.y) * tileSize + tileSize / 2;
             }
         } else {
-            this.x += (dx / distance) * speedPixels;
-            this.y += (dy / distance) * speedPixels;
+            this.x += (dx / distance) * speedPixels; this.y += (dy / distance) * speedPixels;
         }
     }
 
     draw(context) {
         context.beginPath();
         context.arc(this.x, this.y, tileSize * this.radius, 0, Math.PI * 2);
-        context.fillStyle = this.color;
-        context.fill();
-        context.strokeStyle = '#2c3e50';
-        context.lineWidth = 2;
-        context.stroke();
+        context.fillStyle = this.color; context.fill();
 
-        // ХП Бар
-        const hpBarWidth = tileSize * 0.6;
+        const hpBarWidth = tileSize * 0.8;
         const hpPercent = Math.max(0, this.hp / this.maxHp);
-        context.fillStyle = '#e74c3c';
-        context.fillRect(this.x - hpBarWidth / 2, this.y - tileSize * 0.5, hpBarWidth, 4);
-        context.fillStyle = '#2ecc71';
-        context.fillRect(this.x - hpBarWidth / 2, this.y - tileSize * 0.5, hpBarWidth * hpPercent, 4);
+        context.fillStyle = '#e74c3c'; context.fillRect(this.x - hpBarWidth / 2, this.y - tileSize, hpBarWidth, 3);
+        context.fillStyle = '#2ecc71'; context.fillRect(this.x - hpBarWidth / 2, this.y - tileSize, hpBarWidth * hpPercent, 3);
 
-        // Лазер Осадной башни
         if (this.isFiring && this.targetTower) {
-            context.beginPath();
-            context.moveTo(this.x, this.y);
-            context.lineTo(this.targetTower.x, this.targetTower.y);
-            context.strokeStyle = '#c0392b'; // Красный лазер
-            context.lineWidth = 4;
-            context.stroke();
+            context.beginPath(); context.moveTo(this.x, this.y); context.lineTo(this.targetTower.x, this.targetTower.y);
+            context.strokeStyle = '#c0392b'; context.lineWidth = 2; context.stroke();
         }
     }
 }
 
 class Tower {
-    constructor(col, row) {
-        this.col = col;
-        this.row = row;
+    constructor(col, row, type) {
+        this.col = col; this.row = row;
+        this.type = type;
         this.x = offsetX + col * tileSize + tileSize / 2;
         this.y = offsetY + row * tileSize + tileSize / 2;
 
-        // Новое: Здоровье башни
-        this.maxHp = 50;
-        this.hp = this.maxHp;
-
-        this.range = 3.5 * tileSize; 
-        this.damage = 3;
-        this.cooldown = 0.8; 
-        this.timeSinceLastFire = 0;
+        const stats = TOWER_STATS[type];
+        this.level = 1;
+        this.totalSpent = stats.cost;
+        this.upgradeCost = Math.floor(stats.cost * 1.5);
         
+        this.maxHp = stats.hp; this.hp = this.maxHp;
+        this.rangeTiles = stats.rangeTiles;
+        this.range = this.rangeTiles * tileSize;
+        
+        this.damage = stats.damage;
+        this.cooldown = stats.cooldown;
+        this.color = stats.color;
+        
+        this.timeSinceLastFire = 0;
         this.target = null;
         this.isFiring = false; 
     }
 
+    upgrade() {
+        this.level++;
+        this.totalSpent += this.upgradeCost;
+        this.damage = Math.floor(this.damage * 1.5);
+        this.rangeTiles += 0.5;
+        this.range = this.rangeTiles * tileSize;
+        this.maxHp += 100;
+        this.hp += 100;
+        this.upgradeCost = Math.floor(this.upgradeCost * 1.5);
+    }
+
     update(dt) {
-        this.timeSinceLastFire += dt;
-        this.isFiring = false;
-
-        if (this.target && (this.target.hp <= 0 || this.getDistance(this.target) > this.range)) {
-            this.target = null;
-        }
-
+        this.timeSinceLastFire += dt; this.isFiring = false;
+        if (this.target && (this.target.hp <= 0 || this.getDistance(this.target) > this.range)) this.target = null;
         if (!this.target) {
             for (let enemy of enemies) {
-                if (this.getDistance(enemy) <= this.range) {
-                    this.target = enemy;
-                    break;
-                }
+                if (this.getDistance(enemy) <= this.range) { this.target = enemy; break; }
             }
         }
-
         if (this.target && this.timeSinceLastFire >= this.cooldown) {
-            this.target.hp -= this.damage;
-            this.timeSinceLastFire = 0;
-            this.isFiring = true; 
+            this.target.hp -= this.damage; this.timeSinceLastFire = 0; this.isFiring = true; 
         }
     }
 
-    getDistance(enemy) {
-        const dx = this.x - enemy.x;
-        const dy = this.y - enemy.y;
-        return Math.sqrt(dx * dx + dy * dy);
-    }
+    getDistance(enemy) { return Math.sqrt(Math.pow(this.x - enemy.x, 2) + Math.pow(this.y - enemy.y, 2)); }
 
     draw(context) {
-        context.fillStyle = '#3498db';
-        context.fillRect(this.x - tileSize * 0.3, this.y - tileSize * 0.3, tileSize * 0.6, tileSize * 0.6);
+        context.fillStyle = this.color;
+        context.fillRect(this.x - tileSize * 0.4, this.y - tileSize * 0.4, tileSize * 0.8, tileSize * 0.8);
         
-        // Полоска здоровья башни
+        context.fillStyle = 'white';
+        for(let i=0; i<this.level; i++) {
+            context.fillRect(this.x - tileSize*0.3 + (i * tileSize*0.25), this.y - tileSize*0.3, tileSize*0.15, tileSize*0.15);
+        }
+        
         if (this.hp < this.maxHp) {
             const hpPercent = Math.max(0, this.hp / this.maxHp);
-            context.fillStyle = 'red';
-            context.fillRect(this.x - tileSize * 0.3, this.y + tileSize * 0.35, tileSize * 0.6, 4);
-            context.fillStyle = '#2ecc71';
-            context.fillRect(this.x - tileSize * 0.3, this.y + tileSize * 0.35, tileSize * 0.6 * hpPercent, 4);
+            context.fillStyle = 'red'; context.fillRect(this.x - tileSize * 0.4, this.y + tileSize * 0.5, tileSize * 0.8, 2);
+            context.fillStyle = '#2ecc71'; context.fillRect(this.x - tileSize * 0.4, this.y + tileSize * 0.5, tileSize * 0.8 * hpPercent, 2);
         }
 
         if (this.isFiring && this.target) {
+            context.beginPath(); context.moveTo(this.x, this.y); context.lineTo(this.target.x, this.target.y);
+            context.strokeStyle = '#f1c40f'; context.lineWidth = 2; context.stroke();
+        }
+
+        if (selectedTower === this) {
             context.beginPath();
-            context.moveTo(this.x, this.y);
-            context.lineTo(this.target.x, this.target.y);
-            context.strokeStyle = '#f1c40f';
-            context.lineWidth = 3;
+            context.arc(this.x, this.y, this.range, 0, Math.PI * 2);
+            context.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+            context.lineWidth = 1;
             context.stroke();
+            
+            context.strokeStyle = '#2ecc71'; context.lineWidth = 2;
+            context.strokeRect(this.x - tileSize*0.45, this.y - tileSize*0.45, tileSize*0.9, tileSize*0.9);
         }
     }
 }
 
 // ==========================================
-// 3. СЕТКА, ЛАНДШАФТ И ПУТИ
+// 5. КАРТА (40x40 - ТОНКИЕ ДОРОГИ)
 // ==========================================
 class Tile {
     constructor(col, row) {
-        this.col = col;
-        this.row = row;
-        
-        this.type = 'grass'; // 'grass', 'road', 'rock', 'spawn', 'base'
-        this.isBuildable = true;
-        this.hasTower = false;
-        
-        this.cost = 3; // По траве идти тяжело
-        this.distance = Infinity;
-        this.vector = null;
-        this.diggerVector = null; // Скрытый путь для Землекопа
-    }
-
-    draw(context) {
-        const x = offsetX + this.col * tileSize;
-        const y = offsetY + this.row * tileSize;
-
-        context.lineWidth = 1;
-        context.strokeStyle = 'rgba(255, 255, 255, 0.05)';
-
-        // Визуализация ландшафта
-        if (this.type === 'spawn') context.fillStyle = '#ff4757';
-        else if (this.type === 'base') context.fillStyle = '#2ed573';
-        else if (this.type === 'road') context.fillStyle = '#34495e'; // Дорога
-        else if (this.type === 'rock') context.fillStyle = '#2c3e50'; // Горы
-        else context.fillStyle = '#1e272e'; // Трава (Grass)
-
-        context.fillRect(x, y, tileSize, tileSize);
-        context.strokeRect(x, y, tileSize, tileSize);
-
-        if (this.hasTower) {
-            context.fillStyle = '#747d8c'; // Серый фундамент под башней
-            context.fillRect(x, y, tileSize, tileSize);
-        }
-
-        // Подсветка ховера
-        if (mouse.col === this.col && mouse.row === this.row) {
-            context.fillStyle = 'rgba(255, 255, 255, 0.15)';
-            context.fillRect(x, y, tileSize, tileSize);
-            
-            if (this.isBuildable && !this.hasTower) {
-                context.strokeStyle = '#70a1ff';
-                context.lineWidth = 2;
-                context.strokeRect(x + 2, y + 2, tileSize - 4, tileSize - 4);
-            }
-        }
+        this.col = col; this.row = row;
+        this.type = 'grass'; this.isBuildable = true; this.hasTower = false;
+        this.baseCost = Infinity; this.currentCost = Infinity; 
+        this.distance = Infinity; this.vector = null; this.diggerVector = null; 
     }
 }
 
 class Grid {
-    constructor() {
-        this.cells = [];
-        this.createMap();
-    }
+    constructor() { this.cells = []; this.createMap(); }
 
     createMap() {
         for (let c = 0; c < COLS; c++) {
             this.cells[c] = [];
             for (let r = 0; r < ROWS; r++) {
                 const tile = new Tile(c, r);
-                
-                // --- ГЕНЕРАЦИЯ ЛАНДШАФТА ---
-                // 1. Главная дорога
-                if (r === 14 || r === 15) {
-                    tile.type = 'road';
-                    tile.cost = 1; // По дороге идти легко
-                    tile.isBuildable = false;
-                }
-                // 2. Второстепенные пути
-                if (c === 10 && r > 5 && r < 25) { tile.type = 'road'; tile.cost = 1; tile.isBuildable = false; }
-                if (c === 20 && r > 5 && r < 25) { tile.type = 'road'; tile.cost = 1; tile.isBuildable = false; }
 
-                // 3. Непроходимые препятствия (Горы)
-                if ((c > 3 && c < 7 && r < 10) || (c > 23 && c < 27 && r > 20)) {
-                    tile.type = 'rock';
-                    tile.cost = Infinity;
-                    tile.isBuildable = false;
+                if ((c >= 3 && c <= 4 && r >= 3 && r <= 36) || (r >= 3 && r <= 4 && c >= 3 && c <= 36)) { 
+                    tile.type = 'road'; tile.baseCost = 1.0; tile.isBuildable = false; 
                 }
-
-                if (c === 0 && r === 15) tile.type = 'spawn';
-                if (c === COLS - 1 && r === 15) tile.type = 'base';
+                if ((r >= 35 && r <= 36 && c >= 3 && c <= 36) || (c >= 35 && c <= 36 && r >= 3 && r <= 36)) { 
+                    tile.type = 'road'; tile.baseCost = 1.0; tile.isBuildable = false; 
+                }
+                if (Math.abs(c + r - 39) <= 1 && c >= 3 && c <= 36) { 
+                    tile.type = 'road'; tile.baseCost = 0.8; tile.isBuildable = false; 
+                }
+                const distToSpawn = Math.hypot(c - 44, r - 5);
+                if (distToSpawn < 6) {
+                    tile.isBuildable = false;
+                }       
+                if (c >= 2 && c <= 5 && r >= 34 && r <= 37) { tile.type = 'base'; tile.isBuildable = false; tile.baseCost = 1; }
+                if (c >= 34 && c <= 37 && r >= 2 && r <= 5) { tile.type = 'spawn'; tile.isBuildable = false; tile.baseCost = 1; }
 
                 this.cells[c][r] = tile;
             }
         }
     }
 
-    draw(context) {
+    cacheBackground(ctx) {
+        ctx.fillStyle = '#1b4332'; ctx.fillRect(0, 0, bgCanvas.width, bgCanvas.height);
         for (let c = 0; c < COLS; c++) {
             for (let r = 0; r < ROWS; r++) {
-                this.cells[c][r].draw(context);
+                let tile = this.cells[c][r];
+                const x = offsetX + c * tileSize, y = offsetY + r * tileSize;
+                if (tile.type === 'spawn') { ctx.fillStyle = '#c0392b'; ctx.fillRect(x, y, tileSize, tileSize); }
+                else if (tile.type === 'base') { ctx.fillStyle = '#0984e3'; ctx.fillRect(x, y, tileSize, tileSize); }
+                else if (tile.type === 'road') { ctx.fillStyle = '#2d3436'; ctx.fillRect(x, y, tileSize, tileSize); }
             }
         }
     }
@@ -352,167 +393,128 @@ class Grid {
 class Pathfinder {
     constructor(grid) {
         this.grid = grid;
-        this.spawnTile = grid.cells[0][15];
-        this.baseTile = grid.cells[COLS - 1][15];
+        this.spawnTile = grid.cells[36][3]; 
+        this.baseTile = grid.cells[3][36];  
     }
-
-    calculateFields() {
-        this.calculateFlowField(false); // Для обычных врагов
-        this.calculateFlowField(true);  // Для Землекопа (игнорирует башни)
-    }
-
+    calculateFields() { this.calculateFlowField(false); this.calculateFlowField(true); }
+    
     calculateFlowField(isForDigger) {
         for (let c = 0; c < COLS; c++) {
             for (let r = 0; r < ROWS; r++) {
-                if (isForDigger) {
-                    // Землекоп не записывает дистанцию, только вектор
-                } else {
-                    this.grid.cells[c][r].distance = Infinity;
-                    this.grid.cells[c][r].vector = null;
+                let tile = this.grid.cells[c][r];
+                tile.currentCost = tile.baseCost;
+                if (!isForDigger) { tile.distance = Infinity; tile.vector = null; }
+            }
+        }
+
+        if (!isForDigger) {
+            for (let t of towers) {
+                const rangeInTiles = Math.ceil(t.rangeTiles);
+                for (let dc = -rangeInTiles; dc <= rangeInTiles; dc++) {
+                    for (let dr = -rangeInTiles; dr <= rangeInTiles; dr++) {
+                        let nc = t.col + dc, nr = t.row + dr;
+                        if (nc >= 0 && nc < COLS && nr >= 0 && nr < ROWS && Math.sqrt(dc*dc + dr*dr) <= rangeInTiles) {
+                            if (this.grid.cells[nc][nr].type === 'road') this.grid.cells[nc][nr].currentCost += 20; 
+                        }
+                    }
                 }
             }
         }
 
-        // Временное хранилище дистанций для Землекопа
         let diggerDistances = Array(COLS).fill().map(() => Array(ROWS).fill(Infinity));
-        
         if (isForDigger) diggerDistances[this.baseTile.col][this.baseTile.row] = 0;
         else this.baseTile.distance = 0;
 
-        let openSet = [this.baseTile];
+        let heap = new MinHeap(); heap.push({ tile: this.baseTile, dist: 0 });
 
-        while (openSet.length > 0) {
-            openSet.sort((a, b) => {
-                let distA = isForDigger ? diggerDistances[a.col][a.row] : a.distance;
-                let distB = isForDigger ? diggerDistances[b.col][b.row] : b.distance;
-                return distA - distB;
-            });
-            let current = openSet.shift();
+while (!heap.isEmpty()) {
+            let currentData = heap.pop(), current = currentData.tile;
             let currentDist = isForDigger ? diggerDistances[current.col][current.row] : current.distance;
+            if (currentData.dist > currentDist) continue;
 
-            let neighbors = this.getNeighbors(current);
-            for (let n of neighbors) {
-                // Землекоп игнорирует башни, остальные - нет.
-                if (!isForDigger && n.hasTower) continue;
-                if (n.type === 'rock') continue; // Горы не пробить даже землекопом
-
-                let newDist = currentDist + n.cost;
+            for (let n of this.getNeighbors(current)) {
+                if (n.hasTower) continue;
+                if (!isForDigger && n.type === 'grass') continue; 
+                
+                // === ИСПРАВЛЕНИЕ ЗДЕСЬ ===
+                // Для Землекопа стоимость любого шага = 1. Он пойдет напролом!
+                // Для обычных врагов берем текущую стоимость со всеми штрафами от башен.
+               let cost = isForDigger ? (n.type === 'grass' ? 1.5 : n.baseCost) : n.currentCost;
+                // ==========================
+                
+                let newDist = currentDist + cost;
                 let nDist = isForDigger ? diggerDistances[n.col][n.row] : n.distance;
-
                 if (newDist < nDist) {
-                    if (isForDigger) diggerDistances[n.col][n.row] = newDist;
-                    else n.distance = newDist;
-                    
-                    if (!openSet.includes(n)) openSet.push(n);
+                    if (isForDigger) diggerDistances[n.col][n.row] = newDist; else n.distance = newDist;
+                    heap.push({ tile: n, dist: newDist });
                 }
             }
         }
 
-        // Генерация векторов
         for (let c = 0; c < COLS; c++) {
             for (let r = 0; r < ROWS; r++) {
                 let tile = this.grid.cells[c][r];
-                if (tile === this.baseTile || tile.type === 'rock') continue;
-                if (!isForDigger && tile.hasTower) continue;
-
-                let minNeighbor = null;
-                let minDist = Infinity;
-
-                let neighbors = this.getNeighbors(tile);
-                for (let n of neighbors) {
-                    if (!isForDigger && n.hasTower) continue;
-                    if (n.type === 'rock') continue;
-
+                if (tile === this.baseTile || (!isForDigger && tile.type === 'grass')) continue; 
+                let minNeighbor = null, minDist = Infinity;
+                for (let n of this.getNeighbors(tile)) {
+                    if (n.hasTower || (!isForDigger && n.type === 'grass')) continue;
                     let nDist = isForDigger ? diggerDistances[n.col][n.row] : n.distance;
-                    if (nDist < minDist) {
-                        minDist = nDist;
-                        minNeighbor = n;
-                    }
+                    if (nDist < minDist) { minDist = nDist; minNeighbor = n; }
                 }
-
                 if (minNeighbor) {
                     let vec = { x: minNeighbor.col - tile.col, y: minNeighbor.row - tile.row };
-                    if (isForDigger) tile.diggerVector = vec;
-                    else tile.vector = vec;
+                    if (isForDigger) tile.diggerVector = vec; else tile.vector = vec;
                 }
             }
         }
     }
-
     getNeighbors(tile) {
-        let neighbors = [];
-        const dirs = [ {x: 0, y: -1}, {x: 1, y: 0}, {x: 0, y: 1}, {x: -1, y: 0} ];
+        let neighbors = [], dirs = [ {x: 0, y: -1}, {x: 1, y: 0}, {x: 0, y: 1}, {x: -1, y: 0} ];
         for (let d of dirs) {
-            let nc = tile.col + d.x;
-            let nr = tile.row + d.y;
-            if (nc >= 0 && nc < COLS && nr >= 0 && nr < ROWS) {
-                neighbors.push(this.grid.cells[nc][nr]);
-            }
+            let nc = tile.col + d.x, nr = tile.row + d.y;
+            if (nc >= 0 && nc < COLS && nr >= 0 && nr < ROWS) neighbors.push(this.grid.cells[nc][nr]);
         }
         return neighbors;
     }
 }
 
 // ==========================================
-// 4. МЕНЕДЖЕР АВТО-ВОЛН
+// 6. ВОЛНЫ
 // ==========================================
 class WaveManager {
     constructor() {
-        this.waveNumber = 0;
-        this.enemiesToSpawn = [];
-        this.spawnTimer = 0;
-        this.isSpawning = false;
-        
-        this.waveCooldown = 5; // Первая волна через 5 секунд
-        this.uiTimer = document.getElementById('ui-timer');
+        this.waveNumber = 0; this.enemiesToSpawn = []; this.spawnTimer = 0; this.isSpawning = false;
+        this.waveCooldown = 5; this.uiTimer = document.getElementById('ui-timer');
     }
-
     startNextWave() {
-        this.waveNumber++;
-        document.getElementById('ui-wave').innerText = this.waveNumber;
+        this.waveNumber++; 
+        document.getElementById('ui-wave').innerText = this.waveNumber; 
         this.isSpawning = true;
-
-        let knightCount = 3 + this.waveNumber * 2;
-        let mageCount = this.waveNumber > 2 ? Math.floor(this.waveNumber * 1.5) : 0;
-        
+        let knightCount = 5 + this.waveNumber * 3, mageCount = this.waveNumber > 2 ? Math.floor(this.waveNumber * 2) : 0;
         for(let i=0; i<knightCount; i++) this.enemiesToSpawn.push('Knight');
         for(let i=0; i<mageCount; i++) this.enemiesToSpawn.push('Mage');
-        
-        // Спавн Осадной Башни (Начиная с 4 волны)
-        if (this.waveNumber >= 4) {
-            for(let i=0; i<Math.floor(this.waveNumber / 3); i++) this.enemiesToSpawn.push('Siege');
+        if (this.waveNumber >= 4) for(let i=0; i<Math.floor(this.waveNumber / 3); i++) this.enemiesToSpawn.push('Siege');
+        if (this.waveNumber % 10 === 0) {
+            this.enemiesToSpawn.push('Titan'); 
         }
-        
-        // Спавн Землекопа (Каждую 3 волну)
-        if (this.waveNumber > 1 && this.waveNumber % 3 === 0) {
-            this.enemiesToSpawn.push('Digger');
-            this.enemiesToSpawn.push('Digger');
-        }
-
+        if (this.waveNumber > 1 && this.waveNumber % 3 === 0) this.enemiesToSpawn.push('Digger', 'Digger');
         this.enemiesToSpawn.sort(() => Math.random() - 0.5);
     }
-
     update(dt) {
         if (this.isSpawning) {
-            this.uiTimer.innerText = "В бою!";
+            if (this.uiTimer) this.uiTimer.innerText = "В бою!";
             this.spawnTimer += dt;
-            const spawnInterval = Math.max(0.4, 1.5 - (this.waveNumber * 0.05));
-
+            const spawnInterval = Math.max(0.3, 1.2 - (this.waveNumber * 0.05));
             if (this.spawnTimer >= spawnInterval && this.enemiesToSpawn.length > 0) {
-                enemies.push(new Enemy(this.enemiesToSpawn.pop()));
+                const hpMult = 1 + (this.waveNumber - 1) * 0.25;
+                enemies.push(new Enemy(this.enemiesToSpawn.pop(), hpMult));
                 this.spawnTimer = 0;
             }
-
-            if (this.enemiesToSpawn.length === 0 && enemies.length === 0) {
-                this.isSpawning = false;
-                this.waveCooldown = 15; // 15 секунд передышки
-            }
+            if (this.enemiesToSpawn.length === 0 && enemies.length === 0) { this.isSpawning = false; this.waveCooldown = 15; }
         } else {
             this.waveCooldown -= dt;
-            this.uiTimer.innerText = Math.ceil(this.waveCooldown);
-            if (this.waveCooldown <= 0) {
-                this.startNextWave();
-            }
+            if (this.uiTimer) this.uiTimer.innerText = Math.ceil(this.waveCooldown);
+            if (this.waveCooldown <= 0) this.startNextWave();
         }
     }
 }
@@ -522,51 +524,69 @@ const pathfinder = new Pathfinder(gameGrid);
 const waveManager = new WaveManager();
 
 // ==========================================
-// 5. ИНИЦИАЛИЗАЦИЯ И СОБЫТИЯ
+// 7. ИНИЦИАЛИЗАЦИЯ И СОБЫТИЯ
 // ==========================================
 function setupCanvas() {
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = window.innerWidth * dpr;
-    canvas.height = window.innerHeight * dpr;
-    canvas.style.width = `${window.innerWidth}px`;
-    canvas.style.height = `${window.innerHeight}px`;
-    ctx.scale(dpr, dpr);
-    const padding = 40;
-    tileSize = Math.floor(Math.min((window.innerWidth - padding * 2) / COLS, (window.innerHeight - padding * 2) / ROWS));
+    canvas.width = window.innerWidth * dpr; canvas.height = window.innerHeight * dpr;
+    bgCanvas.width = window.innerWidth * dpr; bgCanvas.height = window.innerHeight * dpr;
+    canvas.style.width = `${window.innerWidth}px`; canvas.style.height = `${window.innerHeight}px`;
+    ctx.scale(dpr, dpr); bgCtx.scale(dpr, dpr);
+    
+    tileSize = Math.floor(Math.min(window.innerWidth / COLS, window.innerHeight / ROWS));
     offsetX = Math.floor((window.innerWidth - tileSize * COLS) / 2);
     offsetY = Math.floor((window.innerHeight - tileSize * ROWS) / 2);
+
+    gameGrid.cacheBackground(bgCtx);
+    
+    for (let t of towers) {
+        t.x = offsetX + t.col * tileSize + tileSize / 2;
+        t.y = offsetY + t.row * tileSize + tileSize / 2;
+        t.range = t.rangeTiles * tileSize; 
+    }
+    
+    for (let e of enemies) {
+        e.x = offsetX + e.col * tileSize + tileSize / 2;
+        e.y = offsetY + e.row * tileSize + tileSize / 2;
+        e.targetX = e.x; 
+        e.targetY = e.y;
+        e.range = e.rangeTiles * tileSize;
+    }
 }
 
 window.addEventListener('mousemove', (e) => {
-    mouse.x = e.clientX;
-    mouse.y = e.clientY;
+    mouse.x = e.clientX; mouse.y = e.clientY;
     const col = Math.floor((mouse.x - offsetX) / tileSize);
     const row = Math.floor((mouse.y - offsetY) / tileSize);
-    if (col >= 0 && col < COLS && row >= 0 && row < ROWS) {
-        mouse.col = col; mouse.row = row;
-    } else {
-        mouse.col = -1; mouse.row = -1;
-    }
+    if (col >= 0 && col < COLS && row >= 0 && row < ROWS) { mouse.col = col; mouse.row = row; } 
+    else { mouse.col = -1; mouse.row = -1; }
 });
 
-window.addEventListener('click', () => {
+window.addEventListener('click', (e) => {
+    if (e.target.closest('#build-menu') || e.target.closest('.top-bar') || e.target.closest('#upgrade-menu')) return;
+
     if (mouse.col !== -1 && mouse.row !== -1 && !isGameOver) {
         const tile = gameGrid.cells[mouse.col][mouse.row];
+        let clickedTower = towers.find(t => t.col === mouse.col && t.row === mouse.row);
         
-        if (tile.isBuildable && !tile.hasTower) {
-            if (gold >= TOWER_COST) {
-                tile.hasTower = true; 
-                pathfinder.calculateFields();
-                
-                if (pathfinder.spawnTile.distance === Infinity) {
-                    tile.hasTower = false; 
-                    pathfinder.calculateFields();
-                } else {
-                    gold -= TOWER_COST; 
-                    towers.push(new Tower(mouse.col, mouse.row));
-                    updateUI();
-                }
-            }
+        if (clickedTower) {
+            selectedTower = clickedTower;
+            updateUpgradeUI();
+            return;
+        }
+
+        const stats = TOWER_STATS[currentBuildType];
+        if (tile.isBuildable && !tile.hasTower && gold >= stats.cost) {
+            tile.hasTower = true; 
+            pathfinder.calculateFields();
+            gold -= stats.cost; 
+            towers.push(new Tower(mouse.col, mouse.row, currentBuildType)); 
+            
+            selectedTower = null; 
+            updateUI();
+        } else {
+            selectedTower = null; 
+            updateUpgradeUI();
         }
     }
 });
@@ -574,58 +594,67 @@ window.addEventListener('click', () => {
 window.addEventListener('resize', setupCanvas);
 
 // ==========================================
-// 6. ИГРОВОЙ ЦИКЛ
+// 8. ИГРОВОЙ ЦИКЛ (С ПАССИВНЫМ ИНКОМОМ)
 // ==========================================
 let lastTime = 0;
 function gameLoop(timestamp) {
     if (isGameOver) return;
-    
     if (!lastTime) lastTime = timestamp;
     let dt = (timestamp - lastTime) / 1000;
     if (dt > 0.1) dt = 0.1;
     lastTime = timestamp;
 
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = '#000';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    // --- ПАССИВНЫЙ ИНКОМ ---
+    goldTimer += dt;
+    if (goldTimer >= 1.0) {
+        gold += goldPerSecond;
+        goldTimer -= 1.0;
+        updateUI(); 
+    }
+    // ------------------------
 
-    gameGrid.draw(ctx);
+    ctx.drawImage(bgCanvas, 0, 0, canvas.width, canvas.height);
 
-    // Обновление башен (с проверкой на уничтожение)
+    if (mouse.col !== -1 && mouse.row !== -1) {
+        const hTile = gameGrid.cells[mouse.col][mouse.row];
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
+        ctx.fillRect(offsetX + mouse.col*tileSize, offsetY + mouse.row*tileSize, tileSize, tileSize);
+        if (hTile.isBuildable && !hTile.hasTower) {
+            ctx.strokeStyle = '#2ecc71'; ctx.lineWidth = 2; // Зеленая рамка (можно строить)
+            ctx.strokeRect(offsetX + mouse.col*tileSize + 1, offsetY + mouse.row*tileSize + 1, tileSize - 2, tileSize - 2);
+        } else {
+        // Рисуем красную рамку, если строить нельзя
+            ctx.strokeStyle = '#e74c3c'; ctx.lineWidth = 2;
+            ctx.strokeRect(offsetX + mouse.col*tileSize + 1, offsetY + mouse.row*tileSize + 1, tileSize - 2, tileSize - 2);
+    }
+    }
+
     for (let i = towers.length - 1; i >= 0; i--) {
         let t = towers[i];
         if (t.hp <= 0) {
-            // Башня уничтожена Землекопом или Осадной Башней!
-            gameGrid.cells[t.col][t.row].hasTower = false;
-            towers.splice(i, 1);
-            pathfinder.calculateFields(); // Пересчитываем пути!
-        } else {
-            t.update(dt);
-            t.draw(ctx);
-        }
+            gameGrid.cells[t.col][t.row].hasTower = false; 
+            if (selectedTower === t) { selectedTower = null; updateUpgradeUI(); }
+            towers.splice(i, 1); 
+            pathfinder.calculateFields();
+        } else { t.update(dt); t.draw(ctx); }
     }
 
-    // Обновление врагов
     for (let i = enemies.length - 1; i >= 0; i--) {
         let enemy = enemies[i];
-        enemy.update(dt);
-        enemy.draw(ctx);
-
+        enemy.update(dt); enemy.draw(ctx);
         if (enemy.hp <= 0) {
             if (!enemy.reachedBase && enemy.role !== 'digger') {
-                gold += enemy.reward;
-                const pathLength = pathfinder.spawnTile.distance;
-                score += Math.floor(enemy.reward * (pathLength * 0.1));
+                gold += enemy.reward; score += enemy.reward * 5;
             } else if (enemy.reachedBase) {
-                lives--;
+                let damageToBase = (enemy.role === 'siege' || enemy.role === 'digger') ? 5 : 1;
+                lives -= damageToBase;
                 if (lives <= 0) {
                     isGameOver = true;
                     document.getElementById('game-over-screen').classList.remove('hidden');
                     document.getElementById('final-score').innerText = score;
                 }
             }
-            enemies.splice(i, 1);
-            updateUI();
+            enemies.splice(i, 1); updateUI();
         }
     }
 

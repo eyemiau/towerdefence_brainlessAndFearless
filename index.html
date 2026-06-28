@@ -15,9 +15,24 @@
             <div class="stat">💰 <span id="ui-gold">150</span></div>
             <div class="stat">🏆 <span id="ui-score">0</span></div>
             <div class="stat">🌊 Волна: <span id="ui-wave">0</span></div>
-            <div class="stat" style="color: #f1c40f;">⏳ До волны: <span id="ui-timer">5</span>с</div>
+            <div class="stat" style="color: #f1c40f;">⏳ До волны: <span id="ui-timer">5</span></div>
         </div>
         
+        <div id="build-menu">
+            <div class="build-option active" id="btn-Basic" onclick="selectTower('Basic')">🏹 Базовая (50g)</div>
+            <div class="build-option" id="btn-Sniper" onclick="selectTower('Sniper')">🎯 Снайпер (120g)</div>
+            <div class="build-option" id="btn-Rapid" onclick="selectTower('Rapid')">⚡ Пулемет (80g)</div>
+        </div>
+        
+        <div id="upgrade-menu" class="hidden">
+            <h3 id="upg-title">Башня</h3>
+            <p>Уровень: <span id="upg-level">1</span></p>
+            <p>Урон: <span id="upg-damage">20</span></p>
+            <div class="upgrade-actions">
+                <button id="btn-upgrade" onclick="upgradeSelectedTower()">Улучшить (100g)</button>
+                <button id="btn-sell" onclick="sellSelectedTower()" style="background-color: #e74c3c;">Продать (25g)</button>
+            </div>
+        </div>
         <div id="game-over-screen" class="hidden">
             <h1>ИГРА ОКОНЧЕНА</h1>
             <p>Итоговый счет: <span id="final-score">0</span></p>
