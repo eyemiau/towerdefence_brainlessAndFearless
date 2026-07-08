@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Smart TD</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header id="game-header">
+        <div class="stat">❤️ <span id="ui-lives">20</span></div>
+        <div class="stat">💰 <span id="ui-gold">150</span></div>
+        <div class="stat">🏗️ Башни: <span id="ui-towers">0</span>/15</div>
+        <div class="stat">🏆 <span id="ui-score">0</span></div>
+        <div class="stat">🌊 Волна: <span id="ui-wave">0</span></div>
+        <div class="stat timer">⏳ До волны: <span id="ui-timer">5</span>с</div>
+        <div class="stat" id="btn-mute" onclick="toggleSound()" style="cursor:pointer;">🔊</div>
+    </header>
+
+    <div id="game-container">
+        <canvas id="gameCanvas"></canvas>
+        
+        <div id="build-menu">
+            <h3>Строительство</h3>
+            <div id="btn-Basic" class="build-option active" onclick="selectTower('Basic')">Базовая (1x1) - 50g</div>
+            <div id="btn-Rapid" class="build-option" onclick="selectTower('Rapid')">Пулемет (2x2) - 100g</div>
+            <div id="btn-Sniper" class="build-option" onclick="selectTower('Sniper')">Снайпер (3x3) - 200g</div>
+        </div>
+
+        <div id="upgrade-menu" class="hidden">
+            <span class="close-btn" onclick="closeUpgradeMenu()">✖</span>
+            <h3 id="upg-title">Башня</h3>
+            <p>Уровень: <span id="upg-level">1</span></p>
+            <p>Урон: <span id="upg-damage">20</span></p>
+            <div class="upgrade-actions">
+                <button id="btn-upgrade" onclick="upgradeSelectedTower()">Улучшить</button>
+                <button id="btn-sell" onclick="sellSelectedTower()">Продать</button>
+            </div>
+        </div>
+    </div>
+    
+
+    <div id="game-over-screen" class="hidden">
+        <h1>ИГРА ОКОНЧЕНА</h1>
+        <p>Счет: <span id="final-score">0</span></p>
+        <button onclick="location.reload()">Играть снова</button>
+    </div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/howler/2.2.4/howler.min.js"></script>
+    <script src="sounds.js"></script>
+    <script src="main.js"></script>
+</body>
+</html>
