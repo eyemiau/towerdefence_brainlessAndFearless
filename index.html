@@ -14,6 +14,7 @@
         <div class="stat">🏆 <span id="ui-score">0</span></div>
         <div class="stat">🌊 Волна: <span id="ui-wave">0</span></div>
         <div class="stat timer">⏳ До волны: <span id="ui-timer">5</span>с</div>
+        <div class="stat" id="btn-mute" onclick="toggleSound()" style="cursor:pointer;">🔊</div>
     </header>
 
     <div id="game-container">
@@ -37,13 +38,15 @@
             </div>
         </div>
     </div>
+    
 
     <div id="game-over-screen" class="hidden">
         <h1>ИГРА ОКОНЧЕНА</h1>
         <p>Счет: <span id="final-score">0</span></p>
         <button onclick="location.reload()">Играть снова</button>
     </div>
-
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/howler/2.2.4/howler.min.js"></script>
+    <script src="sounds.js"></script>
     <script src="main.js"></script>
 </body>
 </html>
